@@ -1,0 +1,241 @@
+#! /bin/sh
+#
+# lambert lu
+# 08/29/2013
+#
+#  This Nagios plugin was created to check Oracle Streams status
+#
+
+# Oracle Env
+export ORACLE_BASE=/home/oracle
+export ORACLE_SID=[your SID]
+export ORACLE_HOME=/home/oracle/product/10.2.0
+export ORACLE_OWNER=oracle
+export PATH=$ORACLE_HOME/bin:$PATH
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$ORACLE_HOME/lib
+
+PROGNAME=`basename $0`
+PROGPATH=`echo $0 | sed -e 's,[\\/][^\\/][^\\/]*$,,'`
+REVISION="1.0.0"
+
+. $PROGPATH/utils.sh
+
+
+print_usage() {
+  echo "Usage:"
+  echo "  $PROGNAME --login           <ORACLE_SID> <USER> <PASS>"
+  echo "  $PROGNAME --capture         <ORACLE_SID> <USER> <PASS> <CAPTURE_NAME>"
+  echo "  $PROGNAME --apply           <ORACLE_SID> <USER> <PASS> <APPLY_NAME>"
+  echo "  $PROGNAME --propagation     <ORACLE_SID> <USER> <PASS> <PROPAGATION_NAME>"
+  echo "  $PROGNAME --buffered_queue  <ORACLE_SID> <USER> <PASS> <QUEUE_NAME>  <CRITICAL> <WARNING>"
+  echo "  $PROGNAME --cca_billing_sq  <ORACLE_SID> <USER> <PASS> <CRITICAL> <WARNING>"
+  echo "  $PROGNAME --help"
+  echo "  $PROGNAME --version"
+}
+
+print_help() {
+  print_revision $PROGNAME $REVISION
+  echo ""
+  print_usage
+  echo ""
+  echo "Check Oracle Streams status"
+  echo ""
+  echo "--login SID"
+  echo "   Attempt a dummy login and alert if not ORA-01017: invalid username/password"
+  echo "--capture"
+  echo "   Check capture status"
+  echo "       --->  Requires Oracle user/password and SID specified."
+  echo "                --->  Requires select on V\$STREAMS_CAPTURE"
+  echo "--apply"
+  echo "   Check apply status"
+  echo "       --->  Requires Oracle user/password specified."
+  echo "                --->  Requires select on DBA_APPLY"
+  echo "--propagation"
+  echo "   Check propagation status"
+  echo "       --->  Requires Oracle user/password specified."
+  echo "                --->  Requires select on DBA_PROPAGATION"
+  echo "--buffered_queue"
+  echo "   Check buffered_queue status"
+  echo "       --->  Requires Oracle user/password specified."
+  echo "                --->  Requires select on V\$BUFFERED_QUEUES"
+  echo "--cca_billing_sq"
+  echo "   Check CCA BILLING SEQUENCE different between nodes"
+  echo "       --->  Requires Oracle user/password specified."
+  echo "                --->  Requires select on ADMINCCA.BILLINGSEQUENCE"
+  echo "--help"
+  echo "   Print this help screen"
+  echo "--version"
+  echo "   Print version and license information"
+  echo ""
+  echo "If the plugin doesn't work, check that the ORACLE_HOME environment"
+  echo "variable is set, that ORACLE_HOME/bin is in your PATH, and the"
+  echo "tnsnames.ora file is locatable and is properly configured."
+  echo ""
+  echo "When checking local database status your ORACLE_SID is case sensitive."
+  echo ""
+  support
+}
+
+cmd="$1"
+
+# Information options
+case "$cmd" in
+--help)
+                print_help
+    exit $STATE_OK
+    ;;
+-h)
+                print_help
+    exit $STATE_OK
+    ;;
+--version)
+                print_revision $PROGNAME $REVISION
+    exit $STATE_OK
+    ;;
+-V)
+                print_revision $PROGNAME $REVISION
+    exit $STATE_OK
+    ;;
+esac
+
+case "$cmd" in
+--login)
+    loginchk=`sqlplus $3/$4@$2 < /dev/null`
+    loginchk2=` echo  $loginchk | grep -c ORA-`
+    if [ ${loginchk2} -eq 0 ] ; then
+        echo "OK - User:[$3] login Database:[$2] connected"
+        exit $STATE_OK
+    else
+        loginchk3=` echo "$loginchk" | grep "ORA-" | head -1`
+        echo "CRITICAL - $loginchk3"
+        exit $STATE_CRITICAL
+    fi
+    ;;
+--capture)
+    result=`sqlplus -s ${3}/${4}@${2} << EOF
+set pagesize 0
+SELECT STATE
+FROM V\\$STREAMS_CAPTURE
+WHERE CAPTURE_NAME ='${5}';
+EOF`
+
+    if [ -n "`echo $result | grep ORA-`" ] ; then
+      error=` echo "$result" | grep "ORA-" | head -1`
+      echo "CRITICAL - $error"
+      exit $STATE_CRITICAL
+    fi
+
+    if [ "$result" = "CAPTURING CHANGES" ] ; then
+          echo "OK - CAPTURE:[$5] on Database:[$2] CAPTURING CHANGES"
+          exit $STATE_OK
+    else
+          echo "CRITICAL - CAPTURE:[$5] on Database:[$2] down - $result"
+          exit $STATE_CRITICAL
+    fi
+    ;;
+--apply)
+    result=`sqlplus -s ${3}/${4}@${2} << EOF
+set pagesize 0
+SELECT STATUS FROM DBA_APPLY WHERE APPLY_NAME ='${5}';
+EOF`
+
+    if [ -n "`echo $result | grep ORA-`" ] ; then
+      error=` echo "$result" | grep "ORA-" | head -1`
+      echo "CRITICAL - $error"
+      exit $STATE_CRITICAL
+    fi
+
+    if [ "$result" = "ENABLED" ] ; then
+          echo "OK - APPLY:[$5] on Database:[$2] ENABLED"
+          exit $STATE_OK
+    else
+          echo "CRITICAL - APPLY:[$5] on Database:[$2] down - $result"
+          exit $STATE_CRITICAL
+    fi
+    ;;
+--propagation)
+    result=`sqlplus -s ${3}/${4}@${2} << EOF
+set pagesize 0
+SELECT STATUS FROM DBA_PROPAGATION WHERE PROPAGATION_NAME ='${5}';
+EOF`
+
+    if [ -n "`echo $result | grep ORA-`" ] ; then
+      error=` echo "$result" | grep "ORA-" | head -1`
+      echo "CRITICAL - $error"
+      exit $STATE_CRITICAL
+    fi
+
+    if [ "$result" = "ENABLED" ] ; then
+          echo "OK - PROPAGATION:[$5] on Database:[$2] ENABLED"
+          exit $STATE_OK
+    else
+          echo "CRITICAL - PROPAGATION:[$5] on Database:[$2] down - $result"
+          exit $STATE_CRITICAL
+    fi
+    ;;
+--buffered_queue)
+    if [ ${6} -lt ${7} ] ; then
+        echo "UNKNOWN - Warning level is more then Crit"
+        exit $STATE_UNKNOWN
+    fi
+
+    result=`sqlplus -s ${3}/${4}@${2} << EOF
+set pagesize 0
+select NUM_MSGS
+from V\\$BUFFERED_QUEUES
+WHERE QUEUE_NAME ='${5}';
+EOF`
+
+    if [ -n "`echo $result | grep ORA-`" ] ; then
+      error=` echo "$result" | grep "ORA-" | head -1`
+      echo "CRITICAL - $error"
+      exit $STATE_CRITICAL
+    fi
+
+    buffered_queue=`echo "$result" | awk '/^[ 0-9\.\t ]+$/ {print int($1)}'`
+    if [ "$buffered_queue" -ge ${6} ] ; then
+        echo "${2} : ${5} CRITICAL - BUFFERED_QUEUES $buffered_queue more than ${6}"
+        exit $STATE_CRITICAL
+    fi
+    if [ "$buffered_queue" -ge ${7} ] ; then
+        echo "${2} : ${5} WARNING - BUFFERED_QUEUES $buffered_queue more than ${7}"
+        exit $STATE_WARNING
+    fi
+    echo "${2} : ${5} OK - BUFFERED_QUEUES $buffered_queue"
+    exit $STATE_OK
+    ;;
+--cca_billing_sq)
+    if [ ${5} -lt ${6} ] ; then
+        echo "UNKNOWN - Warning level is more then Crit"
+        exit $STATE_UNKNOWN
+    fi
+
+    result=`sqlplus -s ${3}/${4}@${2} << EOF
+set pagesize 0
+select (BS3.SEQUENCENUM - BS1.SEQUENCENUM) as diff
+from ADMINCCA.BILLINGSEQUENCE@rmora1 BS1
+, ADMINCCA.BILLINGSEQUENCE@scaora1 BS3;
+EOF`
+
+    if [ -n "`echo $result | grep ORA-`" ] ; then
+      error=` echo "$result" | grep "ORA-" | head -1`
+      echo "CRITICAL - $error"
+      exit $STATE_CRITICAL
+    fi
+
+    apply_diff=`echo "$result" | awk '/^[ 0-9\.\t ]+$/ {print int($1)}'`
+    if [ "$apply_diff" -ge ${5} ] ; then
+        echo "${2} : CRITICAL - SEQUENCENUM difference $apply_diff more than ${5}"
+        exit $STATE_CRITICAL
+    fi
+    if [ "$apply_diff" -ge ${6} ] ; then
+        echo "${2} : WARNING  - SEQUENCENUM difference $apply_diff more than ${6}"
+        exit $STATE_WARNING
+    fi
+    echo "${2} : OK - SEQUENCENUM difference $apply_diff"
+    exit $STATE_OK
+    ;;
+*)
+    print_usage
+                exit $STATE_UNKNOWN
+esac
