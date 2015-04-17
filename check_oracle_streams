@@ -5,18 +5,27 @@
 #
 #  This Nagios plugin was created to check Oracle Streams status
 #
+#
+# Version History:
+#
+#	REVISION	DATE		AUTHOR				COMMENT
+#	===========	=========== =================== ===========================================================================
+#	1.0.0		Aug-29-2013	Lambert Lu			Creation.
+#	1.1.0		Apr-17-2015	David de Vega		"full_check" option added. It checks all Streams processes status at once.
+#
+
 
 # Oracle Env
-export ORACLE_BASE=/home/oracle
+export ORACLE_BASE=[your BASE]
 export ORACLE_SID=[your SID]
-export ORACLE_HOME=/home/oracle/product/10.2.0
+export ORACLE_HOME=[your HOME]
 export ORACLE_OWNER=oracle
 export PATH=$ORACLE_HOME/bin:$PATH
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$ORACLE_HOME/lib
 
 PROGNAME=`basename $0`
 PROGPATH=`echo $0 | sed -e 's,[\\/][^\\/][^\\/]*$,,'`
-REVISION="1.0.0"
+REVISION="1.1.0"
 
 . $PROGPATH/utils.sh
 
@@ -29,6 +38,7 @@ print_usage() {
   echo "  $PROGNAME --propagation     <ORACLE_SID> <USER> <PASS> <PROPAGATION_NAME>"
   echo "  $PROGNAME --buffered_queue  <ORACLE_SID> <USER> <PASS> <QUEUE_NAME>  <CRITICAL> <WARNING>"
   echo "  $PROGNAME --cca_billing_sq  <ORACLE_SID> <USER> <PASS> <CRITICAL> <WARNING>"
+  echo "  $PROGNAME --full_check      <ORACLE_SID> <USER> <PASS>"
   echo "  $PROGNAME --help"
   echo "  $PROGNAME --version"
 }
@@ -62,6 +72,10 @@ print_help() {
   echo "   Check CCA BILLING SEQUENCE different between nodes"
   echo "       --->  Requires Oracle user/password specified."
   echo "                --->  Requires select on ADMINCCA.BILLINGSEQUENCE"
+  echo "--full_check"
+  echo "	Check all Apply, Propagation and Capture processes status"
+  echo "	   --->  Requires Oracle user/password specified."
+  echo "				--->  Requieres select on DBA_APPLY, DBA_CAPTURE, DBA_PROPAGATION."
   echo "--help"
   echo "   Print this help screen"
   echo "--version"
@@ -235,7 +249,41 @@ EOF`
     echo "${2} : OK - SEQUENCENUM difference $apply_diff"
     exit $STATE_OK
     ;;
+
+--full_check)
+    result=`sqlplus -s ${3}/${4}@${2} << EOF
+set pagesize 0
+SELECT CASE WHEN SUM(U_RETURN) is not null THEN 'CRITICAL - STREAMS FAILURE: ' || rtrim ( xmlagg (xmlelement (e, tipo||'('||capture_name||')-'||STATUS||'['||ERROR_MESSAGE||']' || ' // ')).extract ('//text()'), '//') 
+WHEN SUM(U_RETURN) is null THEN 'OK'
+END FULL_STATUS            
+FROM 
+(
+select 'CAPTURE' TIPO, CAPTURE_NAME, CAPTURE_USER OWNER, STATUS, ERROR_MESSAGE, CASE STATUS WHEN 'ENABLED' THEN 0 ELSE 1 END U_RETURN FROM DBA_CAPTURE
+UNION
+SELECT 'APPLY' TIPO, APPLY_NAME, APPLY_USER OWNER, STATUS, ERROR_MESSAGE || '(ver DBA_APPLY_ERROR)' ERROR_MESSAGE, CASE STATUS WHEN 'ENABLED' THEN 0 ELSE 1 END U_RETURN  FROM DBA_APPLY
+UNION
+SELECT 'PROPAGATION' TIPO, PROPAGATION_NAME, RULE_SET_OWNER OWNER, STATUS, ERROR_MESSAGE, CASE STATUS WHEN 'ENABLED' THEN 0 ELSE 1 END U_RETURN  FROM DBA_PROPAGATION 
+) where U_RETURN > 0  
+;
+EOF`
+
+    if [ -n "`echo $result | grep ^ORA-`" ] ; then
+      error=` echo "$result" | grep "ORA-"| head -1`
+      echo "CRITICAL - $error"
+      exit $STATE_CRITICAL
+    fi
+
+    if [ -n "`echo $result | grep OK`" ] ; then
+          echo $result
+          exit $STATE_OK
+    else
+          echo $result
+          exit $STATE_CRITICAL
+    fi
+    ;;
 *)
     print_usage
                 exit $STATE_UNKNOWN
+			
 esac
+
